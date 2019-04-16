@@ -1,0 +1,15 @@
+#!/bin/bash
+
+#setup
+
+sudo apt install python virtualenv boto3 botocore awscli
+
+aws configure set aws_access_key_id $1
+aws configure set aws_secret_access_key $2
+aws configure set default.region us-west-1
+
+virtualenv limitchecker
+source limitchecker/bin/activate
+pip install awslimitchecker
+
+awslimitchecker -l

@@ -1,0 +1,234 @@
+#devpanel
+#Copyright (C) 2018 devpanel
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sets up drupal
+Parameters:
+  ClusterName:
+    Type: String
+
+  EcsTasksNumber:
+    Type: String
+
+  EcsTypePlacementStrategy:
+    Type: String
+
+  EcsFieldPlacementStrategy:
+    Type: String
+
+  ContainerPort:
+    Type: String
+
+  ContainerCPUUnit:
+    Type: String
+
+  ContainerMemoryMin:
+    Type: String
+
+  ContainerMemoryMax:
+    Type: String
+
+  ContainerHealthCheckInterval:
+    Type: String
+
+  ContainerHealthCheckTimeout:
+    Type: String
+
+  ContainerHealthCheckRetries:
+    Type: String
+
+  ContainerHealthCheckStartPeriod:
+    Type: String
+
+  AlbHealthCheckInterval:
+    Type: String
+
+  AlbHealthCheckPath:
+    Type: String
+
+  AlbHealthCheckTimeout:
+    Type: String
+
+  AlbHealthCheckHealthyThreshold:
+    Type: String
+
+  AlbHealthCheckUnhealthyThreshold:
+    Type: String
+
+  AlbHealthCheckStartPeriod:
+    Type: String
+
+  HasHTTPS:
+    Type: String
+
+  CertificateArn:
+    Type: String
+
+  HostedZoneName:
+    Type: String
+
+  SiteId:
+    Type: String
+
+  SiteCname:
+    Type: String
+
+  SiteCnameWithDash:
+    Type: String
+
+  SiteCnameWithUnderline:
+    Type: String
+
+  LoadBalancerCname:
+    Type: String
+
+  LoadBalancerCnameWithDash:
+    Type: String
+
+  LoadBalancerCnameWithUnderline:
+    Type: String
+
+  GitBranch:
+    Type: String
+
+  GitCommit:
+    Type: String
+
+  S3Bucket:
+    Type: String
+
+  TypeProject:
+    Type: String
+
+  HealthyAlarmRedLimit:
+    Type: String
+
+  UnHealthyAlarmRedLimit:
+    Type: String
+
+  ServiceVersion:
+    Type: String
+
+  TgPriority:
+    Type: String
+
+  HasDNS:
+    Type: String
+
+  BackupInterval:
+    Type: String
+
+  SiteId:
+    Type: String
+
+Conditions:
+  hasDNS: !Equals [!Ref HasDNS, "true"]
+
+Resources:
+  StackElb:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/service-elb.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        SiteCname: !Ref SiteCname
+        SiteCnameWithDash: !Ref SiteCnameWithDash
+        TgPriority: !Ref TgPriority
+        CertificateArn: !Ref CertificateArn
+        ContainerPort: !Ref ContainerPort
+        AlbHealthCheckInterval: !Ref AlbHealthCheckInterval
+        AlbHealthCheckPath: !Ref AlbHealthCheckPath
+        AlbHealthCheckTimeout: !Ref AlbHealthCheckTimeout
+        AlbHealthCheckHealthyThreshold: !Ref AlbHealthCheckHealthyThreshold
+        AlbHealthCheckUnhealthyThreshold: !Ref AlbHealthCheckUnhealthyThreshold
+        HasHTTPS: !Ref HasHTTPS
+        TypeProject: !Ref TypeProject
+        LoadBalancerCnameWithDash: !Ref LoadBalancerCnameWithDash
+        SiteId: !Ref SiteId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-service-elb
+
+  StackEcs:
+    DependsOn: StackElb
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/service-ecs.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        SiteId: !Ref SiteId
+        SiteCname: !Ref SiteCname
+        SiteCnameWithDash: !Ref SiteCnameWithDash
+        EcsTasksNumber: !Ref EcsTasksNumber
+        ContainerPort: !Ref ContainerPort
+        ContainerCPUUnit: !Ref ContainerCPUUnit
+        ContainerMemoryMin: !Ref ContainerMemoryMin
+        ContainerMemoryMax: !Ref ContainerMemoryMax
+        LoadBalancerCname: !Ref LoadBalancerCname
+        LoadBalancerCnameWithDash: !Ref LoadBalancerCnameWithDash
+        LoadBalancerCnameWithUnderline: !Ref LoadBalancerCnameWithUnderline
+        AlbHealthCheckStartPeriod: !Ref AlbHealthCheckStartPeriod
+        ContainerHealthCheckInterval: !Ref ContainerHealthCheckInterval
+        ContainerHealthCheckTimeout: !Ref ContainerHealthCheckTimeout
+        ContainerHealthCheckRetries: !Ref ContainerHealthCheckRetries
+        ContainerHealthCheckStartPeriod: !Ref ContainerHealthCheckStartPeriod
+        GitBranch: !Ref GitBranch
+        GitCommit: !Ref GitCommit
+        EcsTypePlacementStrategy: !Ref EcsTypePlacementStrategy
+        EcsFieldPlacementStrategy: !Ref EcsFieldPlacementStrategy
+        ServiceVersion: !Ref ServiceVersion
+        TypeProject: !Ref TypeProject
+        BackupInterval: !Ref BackupInterval
+        SiteId: !Ref SiteId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-service-ecs
+
+  StackAlarms:
+    DependsOn: StackElb
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/service-alarms.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        SiteCnameWithDash: !Ref SiteCnameWithDash
+        LoadBalancerCname: !Ref LoadBalancerCname
+        LoadBalancerCnameWithDash: !Ref LoadBalancerCnameWithDash
+        LoadBalancerCnameWithUnderline: !Ref LoadBalancerCnameWithUnderline
+        EcsTasksNumber: !Ref EcsTasksNumber
+        HealthyAlarmRedLimit: !Ref HealthyAlarmRedLimit
+        UnHealthyAlarmRedLimit: !Ref UnHealthyAlarmRedLimit
+        TypeProject: !Ref TypeProject
+        SiteId: !Ref SiteId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-service-alarms
+
+  StackRoute53:
+    Condition: hasDNS
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/service-route53.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        LoadBalancerCname: !Ref LoadBalancerCname
+        HostedZoneName: !Ref HostedZoneName
+        TypeProject: !Ref TypeProject
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-service-route53

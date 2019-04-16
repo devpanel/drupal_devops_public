@@ -1,0 +1,342 @@
+#devpanel
+#Copyright (C) 2018 devpanel
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sets up drupal
+Parameters:
+  ClusterName:
+    Type: String
+
+  SiteCnameWithDash:
+    Type: String
+
+  LoadBalancerCname:
+    Type: String
+
+  LoadBalancerCnameWithDash:
+    Type: String
+
+  LoadBalancerCnameWithUnderline:
+    Type: String
+
+  EcsTasksNumber:
+    Type: Number
+
+  TypeProject:
+    Type: String
+
+  SiteId:
+    Type: String
+
+
+  AlbAlarmBlueRequestCountOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AlbAlarmBlueRequestCountThreshold:
+    Type: Number
+    Default: 2000
+
+  AlbAlarmBlueRequestCountSeconds:
+    Type: Number
+    Default: 60
+
+
+  AlbAlarmYellowUnHealthyHostCountOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AlbAlarmYellowUnHealthyHostCountThreshold:
+    Type: Number
+    Default: 2
+
+  AlbAlarmYellowUnHealthyHostCountSeconds:
+    Type: Number
+    Default: 60
+
+
+  AlbAlarmYellowHealthyHostCountOperator:
+    Type: String
+    Default: LessThanThreshold
+
+  AlbAlarmYellowHealthyHostCountThreshold:
+    Type: Number
+    Default: 4
+
+  AlbAlarmYellowHealthyHostCountSeconds:
+    Type: Number
+    Default: 60
+
+
+  AlbAlarmYellowTargetResponseTimeOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AlbAlarmYellowTargetResponseTimeThreshold:
+    Type: Number
+    Default: 10
+
+  AlbAlarmYellowTargetResponseTimeSeconds:
+    Type: Number
+    Default: 60
+
+
+  AlbAlarmRedUnHealthyHostCountOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AlbAlarmRedUnHealthyHostCountThreshold:
+    Type: Number
+    Default: 4
+
+  AlbAlarmRedUnHealthyHostCountSeconds:
+    Type: Number
+    Default: 60
+
+
+  AlbAlarmRedHealthyHostCountOperator:
+    Type: String
+    Default: LessThanThreshold
+
+  AlbAlarmRedHealthyHostCountThreshold:
+    Type: Number
+    Default: 2
+
+  AlbAlarmRedHealthyHostCountSeconds:
+    Type: Number
+    Default: 60
+
+
+  AlbAlarmRedHTTPCodeELB5XXCountOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AlbAlarmRedHTTPCodeELB5XXCountThreshold:
+    Type: Number
+    Default: 5
+
+  AlbAlarmRedHTTPCodeELB5XXCountSeconds:
+    Type: Number
+    Default: 300
+
+
+  AlbAlarmRedTargetResponseTimeOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AlbAlarmRedTargetResponseTimeThreshold:
+    Type: Number
+    Default: 20
+
+  AlbAlarmRedTargetResponseTimeSeconds:
+    Type: Number
+    Default: 60
+
+
+  UnHealthyAlarmRedLimit:
+    Description: Unhealthy alarm limit
+    Type: Number
+
+  HealthyAlarmRedLimit:
+    Description: Healthy alarm limit
+    Type: Number
+
+Resources:
+  AlbAlarmBlueRequestCount:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ApplicationELB
+      MetricName: RequestCount
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+        - Name: LoadBalancer
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      OKActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_blue_requestcount
+      Period: !Ref AlbAlarmBlueRequestCountSeconds
+      ComparisonOperator: !Ref AlbAlarmBlueRequestCountOperator
+      Statistic: Average
+      Threshold: !Ref AlbAlarmBlueRequestCountThreshold
+
+  AlbAlarmYellowUnHealthyHostCount:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+        - Name: LoadBalancer
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      OKActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_yellow_unhealthyhostcount
+      Period: !Ref AlbAlarmYellowUnHealthyHostCountSeconds
+      ComparisonOperator: !Ref AlbAlarmYellowUnHealthyHostCountOperator
+      Statistic: Average
+      Threshold: !Ref EcsTasksNumber
+
+  AlbAlarmYellowHealthyHostCount:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+        - Name: LoadBalancer
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      OKActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_yellow_healthyhostcount
+      Period: !Ref AlbAlarmYellowHealthyHostCountSeconds
+      ComparisonOperator: !Ref AlbAlarmYellowHealthyHostCountOperator
+      Statistic: Average
+      Threshold: !Ref EcsTasksNumber
+
+  AlbAlarmRedUnHealthyHostCount:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+        - Name: LoadBalancer
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      OKActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_red_unhealthyhostcount
+      Period: !Ref AlbAlarmRedUnHealthyHostCountSeconds
+      ComparisonOperator: !Ref AlbAlarmRedUnHealthyHostCountOperator
+      Statistic: Average
+      Threshold: !Ref UnHealthyAlarmRedLimit
+
+  AlbAlarmRedHealthyHostCount:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/ApplicationELB
+        MetricName: HealthyHostCount
+        EvaluationPeriods: 1
+        Dimensions:
+          - Name: TargetGroup
+            Value:
+              'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+          - Name: LoadBalancer
+            Value:
+              'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+        AlarmActions:
+          - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+        OKActions:
+          - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+        AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_red_healthyhostcount
+        Period: !Ref AlbAlarmRedHealthyHostCountSeconds
+        ComparisonOperator: !Ref AlbAlarmRedHealthyHostCountOperator
+        Statistic: Average
+        Threshold: !Ref HealthyAlarmRedLimit
+
+  AlbAlarmYellowTargetResponseTime:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+        - Name: LoadBalancer
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      OKActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_yellow_targetresponsetime
+      Period: !Ref AlbAlarmYellowTargetResponseTimeSeconds
+      ComparisonOperator: !Ref AlbAlarmYellowTargetResponseTimeOperator
+      Statistic: Average
+      Threshold: !Ref AlbAlarmYellowTargetResponseTimeThreshold
+
+  AlbAlarmRedHTTPCodeELB5XXCount:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_ELB_5XX_Count
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+        - Name: LoadBalancer
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      OKActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_red_httpcodeelb5xxcount
+      Period: !Ref AlbAlarmRedHTTPCodeELB5XXCountSeconds
+      ComparisonOperator: !Ref AlbAlarmRedHTTPCodeELB5XXCountOperator
+      Statistic: SampleCount
+      Threshold: !Ref AlbAlarmRedHTTPCodeELB5XXCountThreshold
+
+  AlbAlarmRedTargetResponseTime:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: TargetGroup
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroupFullName
+        - Name: LoadBalancer
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}BackendAlbFullName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      OKActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_${TypeProject}_${LoadBalancerCnameWithUnderline}__alb_alarm_red_targetresponsetime
+      Period: !Ref AlbAlarmRedTargetResponseTimeSeconds
+      ComparisonOperator: !Ref AlbAlarmRedTargetResponseTimeOperator
+      Statistic: Average
+      Threshold: !Ref AlbAlarmRedTargetResponseTimeThreshold

@@ -1,0 +1,244 @@
+#devpanel
+#Copyright (C) 2018 devpanel
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sets up drupal
+Parameters:
+  ClusterName:
+    Type: String
+
+  SiteId:
+    Type: String
+    
+  SiteCname:
+    Type: String
+
+  SiteCnameWithDash:
+    Type: String
+
+  EcsTasksNumber:
+    Type: String
+
+  ContainerPort:
+    Type: String
+
+  ContainerCPUUnit:
+    Type: String
+
+  ContainerMemoryMin:
+    Type: String
+
+  ContainerMemoryMax:
+    Type: String
+
+  LoadBalancerCname:
+    Type: String
+
+  LoadBalancerCnameWithDash:
+    Type: String
+
+  LoadBalancerCnameWithUnderline:
+    Type: String
+
+  AlbHealthCheckStartPeriod:
+    Type: String
+
+  ContainerHealthCheckInterval:
+    Type: String
+
+  ContainerHealthCheckTimeout:
+    Type: String
+
+  ContainerHealthCheckRetries:
+    Type: String
+
+  ContainerHealthCheckStartPeriod:
+    Type: String
+
+  GitBranch:
+    Type: String
+
+  GitCommit:
+    Type: String
+
+  EcsTypePlacementStrategy:
+    Type: String
+
+  EcsFieldPlacementStrategy:
+    Type: String
+
+  ServiceVersion:
+    Type: String
+
+  TypeProject:
+    Type: String
+
+  BackupInterval:
+    Type: String
+
+Conditions:
+  hasOnlyOneTask: !Equals [!Ref EcsTasksNumber, "1"]
+  containerHasMemoryLimit: !Not [!Equals [!Ref ContainerMemoryMax, "LIMITLESS"]]
+  hasBackupInterval: !Not [!Equals [!Ref BackupInterval, "WITHOUT"]]
+
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${TypeProject}__${LoadBalancerCnameWithUnderline}
+      NetworkMode: bridge
+      Volumes:
+        - Name: "efs"
+          Host:
+            SourcePath: !Sub /efs/${SiteId}
+      ContainerDefinitions:
+        - Name: !Sub ${TypeProject}__${LoadBalancerCnameWithUnderline}
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${TypeProject}
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: 0
+          MemoryReservation: !Ref ContainerMemoryMin
+          Memory: !If [containerHasMemoryLimit, !Ref ContainerMemoryMax, !Ref 'AWS::NoValue']
+          Cpu: !Ref ContainerCPUUnit
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs-cluster/${ClusterName}
+              awslogs-stream-prefix: /ecs-task-output
+              awslogs-region: !Ref AWS::Region
+          Environment:
+            - Name: CLUSTER_NAME
+              Value: !Ref ClusterName
+            - Name: SITE_ID
+              Value: !Ref SiteId
+            - Name: GIT_BRANCH
+              Value: !Ref GitBranch
+            - Name: GIT_COMMIT
+              Value: !Ref GitCommit
+          MountPoints:
+            - SourceVolume: "efs"
+              ContainerPath: "/var/www/html"
+          #Command:
+          #  - /entrypoint.sh
+          #HealthCheck:
+          #  Command: ["CMD-SHELL", "/healthcheck.sh"]
+          #  Interval: !Ref ContainerHealthCheckInterval
+          #  Timeout: !Ref ContainerHealthCheckTimeout
+          #  Retries: !Ref ContainerHealthCheckRetries
+          #  StartPeriod: !Ref ContainerHealthCheckStartPeriod
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${TypeProject}__${LoadBalancerCnameWithUnderline}
+      Cluster:
+        'Fn::ImportValue': !Sub ${ClusterName}ECSCluster
+      Role:
+        'Fn::ImportValue': !Sub '${ClusterName}ECSRoleArn'
+      TaskDefinition: !Ref Task
+      DesiredCount: !Ref EcsTasksNumber
+      DeploymentConfiguration:
+        MinimumHealthyPercent: !If [hasOnlyOneTask, 0, 50]
+        MaximumPercent: 100
+      LoadBalancers:
+        - ContainerName: !Sub ${TypeProject}__${LoadBalancerCnameWithUnderline}
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn:
+            'Fn::ImportValue': !Sub ${ClusterName}-${SiteId}-TargetGroup
+      HealthCheckGracePeriodSeconds: !Ref AlbHealthCheckStartPeriod
+      PlacementConstraints:
+        - Type: 'memberOf'
+          Expression: !Sub attribute:clusterVersion == ${ServiceVersion}
+      PlacementStrategies:
+        - Type: !Sub ${EcsTypePlacementStrategy}
+          Field: !Sub ${EcsFieldPlacementStrategy}
+
+
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: Service
+    Properties:
+      MaxCapacity: 6
+      MinCapacity: 2
+      ResourceId: !Sub service/${ClusterName}/${Service.Name}
+      RoleARN:
+        'Fn::ImportValue': !Sub ${ClusterName}ECSRoleArn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ScalingPolicy:
+    DependsOn: ScalableTarget
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${TypeProject}__${LoadBalancerCnameWithUnderline}
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        #DisableScaleIn: false
+        TargetValue: 60
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+          
+  #============= Backup
+  BackupTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${ClusterName}__${TypeProject}__${LoadBalancerCnameWithUnderline}__BackupTask
+      Volumes:
+        - Name: "efs"
+          Host:
+            SourcePath: !Sub /efs/${SiteId}
+      ContainerDefinitions:
+        - Name: !Sub ${ClusterName}__${TypeProject}__${LoadBalancerCnameWithUnderline}__BackupTask
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${TypeProject}
+          MemoryReservation: 64
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs-cluster/${ClusterName}
+              awslogs-stream-prefix: /ecs-task-output
+              awslogs-region: !Ref AWS::Region
+          Environment:
+            - Name: CLUSTER_NAME
+              Value: !Ref ClusterName
+          MountPoints:
+            - SourceVolume: "efs"
+              ContainerPath: "/var/www/html"
+          EntryPoint:
+            - "sh"
+            - "-c"
+            - !Sub /tools/backup.sh ${SiteId}
+          
+  BackupSchedule:
+    Condition: hasBackupInterval
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${ClusterName}__${TypeProject}__${LoadBalancerCnameWithUnderline}__BackupSchedule
+      ScheduleExpression: !Sub rate(${BackupInterval})
+      State: ENABLED
+      Targets:
+        - Arn:
+            'Fn::ImportValue': !Sub ${ClusterName}ECSClusterArn
+          Id: !Sub ${ClusterName}__${TypeProject}__${LoadBalancerCnameWithUnderline}__BackupTask
+          RoleArn:
+            'Fn::ImportValue': !Sub ${ClusterName}ECSRoleArn
+          EcsParameters:
+            TaskDefinitionArn: !Ref BackupTask
+            TaskCount: 1

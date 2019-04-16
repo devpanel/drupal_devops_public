@@ -1,0 +1,428 @@
+/*
+devpanel
+Copyright (C) 2018 devpanel
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
+pipeline
+{
+  agent
+  {
+    label 'jenkins-ecs-slave'
+  }
+  options
+  {
+    skipDefaultCheckout true
+  }
+  environment
+  {
+    SERVICE_VERSION = "1.0"
+    SCM = "empty"
+    SITE_SECRETS = "empty"
+  }
+  stages
+  {
+    stage('Checkout SCM')
+    {
+      steps
+      {
+        script
+        {
+          SCM = checkout scm
+          SCM.GIT_BRANCH = SCM.GIT_BRANCH.tokenize('/')[1]
+        }
+      }
+    }
+    stage('Deploy Parameters')
+    {
+      steps
+      {
+        script
+        {
+          PARAMETERS =
+          [
+            string(name: 'REGION', description: 'Region', defaultValue: "us-east-1"),
+            string(name: 'CLUSTER_NAME', description: 'Cluster Name', defaultValue: "pandora"),
+            string(name: 'SITE_ID', description: 'Site Id', defaultValue: "drupal2019")
+          ]
+
+          if (!params)
+          {
+            properties([parameters(PARAMETERS)])
+            error("Parameters does not exists in this execution. Run again!")
+          }
+          else
+            properties([parameters(PARAMETERS)])
+
+          params = readYaml(text: sh(script: "devops/jenkins/scripts/Parameter/concatenate.sh 'devops/jenkins/jobs/pipeline/deploy/fixedParameters.yml' '${params}'", returnStdout: true).trim())
+        }
+      }
+    }
+    stage('Gets Global Variables and Validate Resources')
+    {
+      steps
+      {
+        script
+        {
+          //== Validate Account
+          //== Enable aws-cli to access remote account
+          env.IS_CORE_TOKEN = sh(script: "devops/jenkins/scripts/Aws/isCore.sh", returnStdout: true).trim()
+          if (env.IS_CORE_TOKEN == "yes")
+            error("ACCESS_KEY_ID and SECRET_ACCESS_KEY don't can be of Core Account!")
+
+          //== Validates main parameters
+          if (!params.REGION)
+            error("Parameter REGION is required!")
+
+          if (!params.CLUSTER_NAME)
+            error("Parameter CLUSTER_NAME is required!")
+
+          if (!params.SITE_ID)
+            error("Parameter SITE_ID is required!")
+
+          env.REGIONS = sh(script: "devops/jenkins/scripts/Parameter/getRegions.sh", returnStdout: true).trim()
+          if (!env.REGIONS.contains(params.REGION))
+            error("Invalid REGION!")
+
+          env.CLUSTERS = sh(script: "devops/jenkins/scripts/Parameter/getClusters.sh 'Sets up ecs-cluster-rds'", returnStdout: true).trim()
+          env.CLUSTER = params.REGION + " : " + params.CLUSTER_NAME
+          if (!env.CLUSTERS.contains(env.CLUSTER))
+            error("Invalid CLUSTER!")
+
+          //== Validates parameters in secret manager
+          env.ERROR_MSG = " not exits in secret /ECS-CLUSTER/${params.CLUSTER_NAME}/SITE/${env.SITE_ID} on client account in region ${params.REGION}!"
+          SITE_SECRETS = readJSON(text: sh(script: "devops/jenkins/scripts/SecretManager/get.sh ${params.REGION} /ECS-CLUSTER/${params.CLUSTER_NAME}/SITE/${env.SITE_ID}", returnStdout: true).trim())
+
+          if (!SITE_SECRETS.JENKINS_GIT_URL)
+            error("Parameter JENKINS_GIT_URL ${env.ERROR_MSG}")
+
+          if (!SITE_SECRETS.JENKINS_GIT_BRANCH)
+            error("Parameter JENKINS_GIT_BRANCH ${env.ERROR_MSG}")
+
+          if (!SITE_SECRETS.JENKINS_GIT_USER)
+            error("Parameter JENKINS_GIT_USER ${env.ERROR_MSG}")
+
+          if (!SITE_SECRETS.JENKINS_GIT_TOKEN)
+            error("Parameter JENKINS_GIT_TOKEN ${env.ERROR_MSG}")
+
+          if (!SITE_SECRETS.JENKINS_BACKUP_INTERVAL)
+            error("Parameter JENKINS_BACKUP_INTERVAL ${env.ERROR_MSG}")
+
+          env.BACKUP_INTERVALS="WITHOUT\n5 minutes\n10 minutes\n30 minutes\n1 hour\n 6 hours\n12 hours\n1 day\n15 days\n30 days"
+          if (!env.BACKUP_INTERVALS.contains(SITE_SECRETS.JENKINS_BACKUP_INTERVAL))
+            error("Invalid JENKINS_BACKUP_INTERVAL. The valid intervals are ${env.BACKUP_INTERVALS}")
+
+          if (!SITE_SECRETS.JENKINS_SITE_CNAME)
+            error("Parameter JENKINS_SITE_CNAME ${env.ERROR_MSG}")
+
+          if (SITE_SECRETS.JENKINS_SITE_HAS_HTTPS == null)
+             error("Parameter JENKINS_SITE_HAS_HTTPS ${env.ERROR_MSG}")
+
+          if (!SITE_SECRETS.JENKINS_SITE_TITLE)
+             error("Parameter JENKINS_SITE_TITLE ${env.ERROR_MSG}")
+             
+          if (!SITE_SECRETS.JENKINS_SITE_ADMIN_USER)
+             error("Parameter JENKINS_SITE_ADMIN_USER ${env.ERROR_MSG}")
+             
+          if (!SITE_SECRETS.JENKINS_SITE_ADMIN_PASS)
+             error("Parameter JENKINS_SITE_ADMIN_PASS ${env.ERROR_MSG}")
+             
+          if (!SITE_SECRETS.JENKINS_SITE_ADMIN_EMAIL)
+             error("Parameter JENKINS_SITE_ADMIN_EMAIL ${env.ERROR_MSG}")
+        
+
+          //== Gets General parameters
+          env.LOCAL_IMAGE_NAME = "drupal"
+          env.TYPE_PROJECT = "${env.LOCAL_IMAGE_NAME}"
+          env.STACK_NAME = "${params.CLUSTER_NAME}-${env.LOCAL_IMAGE_NAME}-${params.SITE_ID}"
+          env.HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT = "no"
+
+          //== Validates YAMLs
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/service.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/service-route53.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/service-elb.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/service-ecs.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/service-alarms.yml")
+
+          //== Gets and Validates DNS parameters
+          env.LOAD_BALANCER_CNAME = SITE_SECRETS.JENKINS_SITE_CNAME
+          env.SITE_CNAME_WITH_DASH = SITE_SECRETS.JENKINS_SITE_CNAME.replaceAll("\\.", "-")
+          env.SITE_CNAME_WITH_UNDERLINE = env.SITE_CNAME_WITH_DASH.replaceAll("-", "_")
+          env.LOAD_BALANCER_CNAME_WITH_DASH = env.LOAD_BALANCER_CNAME.replaceAll("\\.", "-")
+          env.LOAD_BALANCER_CNAME_WITH_UNDERLINE = env.LOAD_BALANCER_CNAME_WITH_DASH.replaceAll("-", "_")
+          env.HOSTED_ZONE_NAME = sh(script: "devops/jenkins/scripts/Utilities/getHostedZoneName.sh ${SITE_SECRETS.JENKINS_SITE_CNAME} true", returnStdout: true).trim()
+          if (env.HOSTED_ZONE_NAME == "")
+          {
+            println "Hosted Zone Name not exists in Client Route53 for SITE_CNAME '${SITE_SECRETS.JENKINS_SITE_CNAME}'!!!"
+            println "Verify now in core account..."
+
+            sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+
+            env.HOSTED_ZONE_NAME = sh(script: "devops/jenkins/scripts/Utilities/getHostedZoneName.sh ${SITE_SECRETS.JENKINS_SITE_CNAME}", returnStdout: true).trim()
+
+            if (env.HOSTED_ZONE_NAME != "")
+              env.HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT = "yes"
+            else
+              error("Hosted Zone Name not exists in Client and Core Route53 for SITE_CNAME '${SITE_SECRETS.JENKINS_SITE_CNAME}'!!!")
+
+            sh("devops/jenkins/scripts/Aws/enableRemote.sh")  //== Enable aws-cli to access remote account
+          }
+          
+          //if HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT = no, then created Subdomain on remote account
+          env.HAS_CLOUDFORMATION_DNS = (env.HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT != "yes") ? "yes" : "no"
+
+          //== Gets Cloudformation parameters
+          env.IS_FIRST_EXECUTION = sh(script: "devops/jenkins/scripts/Utilities/isFirstExecution.sh ${params.REGION} ${env.STACK_NAME}", returnStdout: true).trim()
+          env.TG_PRIORITY = sh(script: "devops/jenkins/scripts/Utilities/getCorrectTargetPriority.sh ${SITE_SECRETS.JENKINS_SITE_CNAME}", returnStdout: true).trim()
+          env.ECS_TYPE_PLACEMENT_STRATEGY = params.ECS_PLACEMENT_STRATEGY.tokenize(" - ")[0]
+          env.ECS_FIELD_PLACEMENT_STRATEGY = (params.ECS_PLACEMENT_STRATEGY.tokenize(" - ")[1] != null) ? params.ECS_PLACEMENT_STRATEGY.tokenize(' - ')[1] : "WITHOUT"
+
+
+          //== Gets And Validates Database parameters
+          env.CONTAINER_DB_NAME = params.SITE_ID
+          if (env.IS_FIRST_EXECUTION == "yes")
+          {
+            env.CONTAINER_DB_USERNAME = sh(script: "devops/jenkins/scripts/Utilities/generateRandomName.sh container 6", returnStdout: true).trim()
+            env.CONTAINER_DB_PASSWORD = sh(script: "devops/jenkins/scripts/Utilities/generateRandomName.sh pass 24", returnStdout: true).trim()
+
+            sh("devops/jenkins/scripts/SecretManager/set.sh ${params.REGION} /ECS-CLUSTER/${params.CLUSTER_NAME}/SITE/${env.SITE_ID} '{\"CONTAINER_DB_NAME\":\"${env.CONTAINER_DB_NAME}\",\"CONTAINER_DB_USERNAME\":\"${env.CONTAINER_DB_USERNAME}\",\"CONTAINER_DB_PASSWORD\":\"${env.CONTAINER_DB_PASSWORD}\"}'")
+          }
+          else
+          {
+            env.CONTAINER_DB_USERNAME = SITE_SECRETS.CONTAINER_DB_USERNAME
+            env.CONTAINER_DB_PASSWORD = SITE_SECRETS.CONTAINER_DB_PASSWORD
+          }
+
+          //== Get Others parameters
+          env.ACM_CERTIFICATE_ARN = sh(script: "devops/jenkins/scripts/Utilities/getCertificate.sh ${params.REGION} ${SITE_SECRETS.JENKINS_SITE_CNAME}", returnStdout: true).trim()
+          env.S3_BUCKET = sh(script: "devops/jenkins/scripts/Utilities/createS3Bucket.sh ${params.REGION}", returnStdout: true).trim()
+
+          //== Gets Healthy alarms parameters
+          env.HEALTHY_ALARM_RED_LIMIT = params.ECS_TASKS - 1
+          env.UNHEALTHY_ALARM_RED_LIMIT = params.ECS_TASKS + 1
+        }
+      }
+    }
+    stage('Checkout git client')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Git/clone.sh ${SITE_SECRETS.JENKINS_GIT_URL} ${SITE_SECRETS.JENKINS_GIT_BRANCH} ${SITE_SECRETS.JENKINS_GIT_USER} ${SITE_SECRETS.JENKINS_GIT_TOKEN} '../${env.TYPE_PROJECT}_client/${params.SITE_ID}'")
+      }
+    }
+    stage ('Initialize Resources')
+    {
+      parallel
+      {
+        stage('Create Certificate')
+        {
+          when { expression { SITE_SECRETS.JENKINS_SITE_HAS_HTTPS == "yes" && env.ACM_CERTIFICATE_ARN == "null" } }
+          steps
+          {
+            script
+            {
+              env.ACM_CERTIFICATE_ARN = sh(script: "devops/jenkins/scripts/Utilities/createCertificate.sh ${params.REGION} ${SITE_SECRETS.JENKINS_SITE_CNAME} ${env.HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT}", returnStdout: true).trim()
+            }
+          }
+        }
+        stage('Initialize DB')
+        {
+          steps
+          {
+            // create schema if not exists
+            sh("devops/jenkins/scripts/MySQL/query.sh ${params.REGION} ${params.CLUSTER_NAME} \"CREATE DATABASE IF NOT EXISTS ${env.CONTAINER_DB_NAME}\" || :")
+
+            // create user if not exits
+            sh("devops/jenkins/scripts/MySQL/query.sh ${params.REGION} ${params.CLUSTER_NAME} \"CREATE USER '${env.CONTAINER_DB_USERNAME}'@'%' IDENTIFIED BY '${env.CONTAINER_DB_PASSWORD}'\" || :")
+
+            // grant privileges and flush
+            sh("devops/jenkins/scripts/MySQL/query.sh ${params.REGION} ${params.CLUSTER_NAME} \"GRANT SELECT, EXECUTE, SHOW VIEW, ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, INDEX, INSERT, REFERENCES, TRIGGER, UPDATE, LOCK TABLES  ON ${env.CONTAINER_DB_NAME}.* TO '${env.CONTAINER_DB_USERNAME}'; FLUSH PRIVILEGES\"")
+          }
+        }
+        stage('Build Image')
+        {
+          steps
+          {
+            dir("devops/docker")
+            {
+              // Build docker image
+              sh("docker build -t ${LOCAL_IMAGE_NAME} -f Dockerfile .")
+            }
+          }
+        }
+      }
+    }
+    stage('Push image to ECR')
+    {
+      steps
+      {
+        script
+        {
+          // Push to ECR
+          sh("ecs-cli push -r ${params.REGION} ${env.LOCAL_IMAGE_NAME}")
+        }
+      }
+    }
+    stage('Copy scripts to S3')
+    {
+      steps
+      {
+        //==== Drupal
+        dir ("../${env.TYPE_PROJECT}_client/${params.SITE_ID}")
+        {
+          sh("aws s3 sync . s3://${env.S3_BUCKET}/cms/${env.TYPE_PROJECT}/${params.SITE_ID} --exclude '.git/*'")
+        }
+
+        //==== Cloudformation
+        sh("aws s3 sync devops/s3/cloudformation s3://${env.S3_BUCKET}/cloudformation/${env.TYPE_PROJECT}/")
+      }
+    }
+    stage('Copy CMS From S3 to EFS')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Utilities/runInOneInstanceOnCluster.sh ${params.REGION} ${params.CLUSTER_NAME} 'mkdir -p /efs/${params.SITE_ID} && aws s3 sync s3://${env.S3_BUCKET}/cms/${env.TYPE_PROJECT}/${params.SITE_ID} /efs/${params.SITE_ID}'")
+      }
+    }
+    stage('Install site')
+    {
+      when { expression { env.IS_FIRST_EXECUTION == "yes" } }
+      steps
+      {
+        // Install site
+        sh("devops/jenkins/scripts/Drupal/Install/site.sh ${params.REGION} ${params.CLUSTER_NAME} ${params.SITE_ID}")
+      }
+    }
+    stage('Deploy Cloudformation')
+    {
+      steps
+      {
+        script
+        {
+          env.CLOUDFORMATION_STAGE = true
+          sh("""
+            aws cloudformation deploy --region ${REGION} --stack-name ${STACK_NAME} --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset --template-file devops/s3/cloudformation/service.yml --parameter-overrides \
+            ClusterName=${params.CLUSTER_NAME} \
+            EcsTasksNumber=${params.ECS_TASKS} \
+            EcsTypePlacementStrategy=${env.ECS_TYPE_PLACEMENT_STRATEGY} \
+            EcsFieldPlacementStrategy=${env.ECS_FIELD_PLACEMENT_STRATEGY} \
+            ContainerPort=${params.CONTAINER_PORT} \
+            ContainerCPUUnit=${params.CONTAINER_CPU_UNIT} \
+            ContainerMemoryMin=${params.CONTAINER_MEMORY_MIN} \
+            ContainerMemoryMax=${params.CONTAINER_MEMORY_MAX} \
+            ContainerHealthCheckInterval=${params.CONTAINER_HC_INTERVAL} \
+            ContainerHealthCheckTimeout=${params.CONTAINER_HC_TIMEOUT} \
+            ContainerHealthCheckRetries=${params.CONTAINER_HC_RETRIES} \
+            ContainerHealthCheckStartPeriod=${params.CONTAINER_HC_STARTPERIOD} \
+            AlbHealthCheckInterval=${params.ALB_HC_INTERVAL} \
+            AlbHealthCheckPath=${params.ALB_HC_PATH} \
+            AlbHealthCheckTimeout=${params.ALB_HC_TIMEOUT} \
+            AlbHealthCheckHealthyThreshold=${params.ALB_HC_HEALTHY_THRESHOLD} \
+            AlbHealthCheckUnhealthyThreshold=${params.ALB_HC_UNHEALTHY_THRESHOLD} \
+            AlbHealthCheckStartPeriod=${params.ALB_HC_STARTPERIOD} \
+            HasHTTPS=${params.HAS_HTTPS} \
+            CertificateArn=${env.ACM_CERTIFICATE_ARN} \
+            HostedZoneName=${env.HOSTED_ZONE_NAME} \
+            SiteId=${params.SITE_ID} \
+            SiteCname=${SITE_SECRETS.JENKINS_SITE_CNAME} \
+            SiteCnameWithDash=${env.SITE_CNAME_WITH_DASH} \
+            SiteCnameWithUnderline=${env.SITE_CNAME_WITH_UNDERLINE} \
+            LoadBalancerCname=${env.LOAD_BALANCER_CNAME} \
+            LoadBalancerCnameWithDash=${env.LOAD_BALANCER_CNAME_WITH_DASH} \
+            LoadBalancerCnameWithUnderline=${env.LOAD_BALANCER_CNAME_WITH_UNDERLINE} \
+            GitBranch=${SCM.GIT_BRANCH} \
+            GitCommit=${SCM.GIT_COMMIT} \
+            S3Bucket=${env.S3_BUCKET} \
+            TypeProject=${env.TYPE_PROJECT} \
+            HealthyAlarmRedLimit=${env.HEALTHY_ALARM_RED_LIMIT} \
+            UnHealthyAlarmRedLimit=${env.UNHEALTHY_ALARM_RED_LIMIT} \
+            ServiceVersion=${env.SERVICE_VERSION} \
+            TgPriority=${env.TG_PRIORITY} \
+            HasDNS=${env.HAS_CLOUDFORMATION_DNS} \
+            BackupInterval='${SITE_SECRETS.JENKINS_BACKUP_INTERVAL}'
+            """)
+        }
+      }
+    }
+    stage('Clone Site in Cluster')
+    {
+      when { expression { SITE_SECRETS != "empty" && SITE_SECRETS.JENKINS_SITE_CNAME && SITE_SECRETS.JENKINS_CLONE_FROM_SITEID && !SITE_SECRETS.JENKINS_RESTORE_FROM_S3_URL } }
+      steps
+      {
+        sh("devops/jenkins/scripts/Drupal/Tools/clone.sh ${params.REGION} ${params.CLUSTER_NAME} ${SITE_SECRETS.JENKINS_CLONE_FROM_SITEID} ${params.SITE_ID}")
+      }
+    }
+    stage('Restore from S3 URL')
+    {
+      when { expression { SITE_SECRETS != "empty" && SITE_SECRETS.JENKINS_SITE_CNAME && SITE_SECRETS.JENKINS_RESTORE_FROM_S3_URL && !SITE_SECRETS.JENKINS_CLONE_FROM_SITEID } }
+      steps
+      {
+        sh("devops/jenkins/scripts/Drupal/Tools/restore.sh ${params.REGION} ${params.CLUSTER_NAME} ${SITE_SECRETS.JENKINS_RESTORE_FROM_S3_URL} ${params.SITE_ID}")
+      }
+    }
+    stage('Insert Subdomain in Account core')
+    {
+      when { expression { env.HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT == "yes" } }
+      steps
+      {
+        script
+        {
+          BACKEND_ALB_DNS = sh(script: "devops/jenkins/scripts/Utilities/getCloudFormationVariable.sh ${params.REGION} '${params.CLUSTER_NAME}BackendAlbDns'", returnStdout: true).trim()
+
+          sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+
+          sh("devops/jenkins/scripts/Utilities/setSubdomain.sh ${SITE_SECRETS.JENKINS_SITE_CNAME} ${BACKEND_ALB_DNS}")
+
+          sh("devops/jenkins/scripts/Aws/enableRemote.sh")  //== Enable aws-cli to access remote account
+        }
+      }
+    }
+  }
+  post
+  {
+    always
+    {
+      script
+      {
+        env.RESULT=(currentBuild.result == null ? "SUCCESSFUL" : currentBuild.result)
+
+        if (env.CLOUDFORMATION_STAGE)
+          sh("aws cloudformation describe-stack-events --stack-name ${STACK_NAME} --region ${REGION} | jq '.StackEvents[] | .LogicalResourceId + \" - \" + .ResourceStatus + \" - \" + .ResourceStatusReason'")
+
+        //== Removes all containers
+        sh("docker rm `docker ps --all --quiet` --force || :")
+
+        //== Removes not used images
+        sh("docker rmi `docker images --quiet --filter dangling=true` --force || :")
+
+        //== Remove not used volumes
+        sh("docker volume rm `docker volume ls --quiet --filter dangling=true` --force || :")
+
+
+        if (env.RESULT == "FAILURE" && env.IS_FIRST_EXECUTION == "yes")
+        {
+          build job: 'drupal-delete', propagate: false, parameters:
+          [
+            string(name: 'REGION', value: params.REGION),
+            string(name: 'CLUSTER_NAME', value: params.CLUSTER_NAME),
+            string(name: 'SITE_ID', value: params.SITE_ID)
+          ]
+        }
+      }
+    }
+  }
+}

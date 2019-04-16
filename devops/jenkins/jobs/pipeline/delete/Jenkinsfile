@@ -1,0 +1,218 @@
+/*
+devpanel
+Copyright (C) 2018 devpanel
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
+pipeline
+{
+  agent
+  {
+    label 'jenkins-ecs-slave'
+  }
+  options
+  {
+    skipDefaultCheckout true
+  }
+  environment
+  {
+    SERVICE_VERSION = "1.0"
+    SCM = "empty"
+    SITE_SECRETS = "empty"
+  }
+  stages
+  {
+    stage('Checkout SCM')
+    {
+      steps
+      {
+        script
+        {
+          SCM = checkout scm
+          SCM.GIT_BRANCH = SCM.GIT_BRANCH.tokenize('/')[1]
+        }
+      }
+    }
+    stage('Deploy Parameters')
+    {
+      steps
+      {
+        script
+        {
+          PARAMETERS =
+          [
+            string(name: 'REGION', description: 'Region', defaultValue: "us-east-1"),
+            string(name: 'CLUSTER_NAME', description: 'Cluster Name', defaultValue: "pandora"),
+            string(name: 'SITE_ID', description: 'Site Id', defaultValue: "")
+          ]
+
+          if (!params)
+          {
+            properties([parameters(PARAMETERS)])
+            error("Parameters does not exists in this execution. Run again!")
+          }
+          else
+            properties([parameters(PARAMETERS)])
+
+          params = readYaml(text: sh(script: "devops/jenkins/scripts/Parameter/concatenate.sh 'devops/jenkins/jobs/pipeline/deploy/fixedParameters.yml' '${params}'", returnStdout: true).trim())
+        }
+      }
+    }
+    stage('Gets Global Variables and Validate Resources')
+    {
+      steps
+      {
+        script
+        {
+          //== Validate Account
+          //== Enable aws-cli to access remote account
+          env.IS_CORE_TOKEN = sh(script: "devops/jenkins/scripts/Aws/isCore.sh", returnStdout: true).trim()
+          if (env.IS_CORE_TOKEN == "yes")
+            error("ACCESS_KEY_ID and SECRET_ACCESS_KEY don't can be of Core Account!")
+
+          //== Validates main parameters
+          if (!params.REGION)
+            error("Parameter REGION is required!")
+
+          if (!params.CLUSTER_NAME)
+            error("Parameter CLUSTER_NAME is required!")
+
+          if (!params.SITE_ID)
+            error("Parameter SITE_ID is required!")
+
+          env.REGIONS = sh(script: "devops/jenkins/scripts/Parameter/getRegions.sh", returnStdout: true).trim()
+          if (!env.REGIONS.contains(params.REGION))
+            error("Invalid REGION!")
+
+          env.CLUSTERS = sh(script: "devops/jenkins/scripts/Parameter/getClusters.sh 'Sets up ecs-cluster-rds'", returnStdout: true).trim()
+          env.CLUSTER = params.REGION + " : " + params.CLUSTER_NAME
+          if (!env.CLUSTERS.contains(env.CLUSTER))
+            error("Invalid CLUSTER!")
+
+          //== Validates parameters in secret manager
+          env.ERROR_MSG = " not exits in secret /ECS-CLUSTER/${env.CLUSTER_NAME}/SITE/${env.SITE_ID} on client account in region ${params.REGION}!"
+          SITE_SECRETS = readJSON(text: sh(script: "devops/jenkins/scripts/SecretManager/get.sh ${params.REGION} /ECS-CLUSTER/${env.CLUSTER_NAME}/SITE/${env.SITE_ID}", returnStdout: true).trim())
+
+          if (!SITE_SECRETS.JENKINS_SITE_CNAME)
+            error("Parameter JENKINS_SITE_CNAME ${env.ERROR_MSG}")
+
+          if (SITE_SECRETS.JENKINS_SITE_HAS_HTTPS == null)
+             error("Parameter JENKINS_SITE_HAS_HTTPS ${env.ERROR_MSG}")
+
+          //== Gets General parameters
+          env.LOCAL_IMAGE_NAME = "drupal"
+          env.TYPE_PROJECT = "${env.LOCAL_IMAGE_NAME}"
+          env.STACK_NAME = "${env.CLUSTER_NAME}-${env.LOCAL_IMAGE_NAME}-${params.SITE_ID}"
+
+          //== Validate Account
+          env.IS_CORE_TOKEN = (sh(script: "devops/jenkins/scripts/Aws/isCore.sh", returnStdout: true).trim() == "yes")
+          if (env.IS_CORE_TOKEN == true)
+            error("ACCESS_KEY_ID and SECRET_ACCESS_KEY don't can be of Core Account!")
+
+          //== Gets and Validates DNS parameters
+          env.LOAD_BALANCER_CNAME = SITE_SECRETS.JENKINS_SITE_CNAME
+          env.SITE_CNAME_WITH_DASH = SITE_SECRETS.JENKINS_SITE_CNAME.replaceAll("\\.", "-")
+          env.SITE_CNAME_WITH_UNDERLINE = env.SITE_CNAME_WITH_DASH.replaceAll("-", "_")
+          env.LOAD_BALANCER_CNAME_WITH_DASH = env.LOAD_BALANCER_CNAME.replaceAll("\\.", "-")
+          env.LOAD_BALANCER_CNAME_WITH_UNDERLINE = env.LOAD_BALANCER_CNAME_WITH_DASH.replaceAll("-", "_")
+          //== Get Others parameters
+          env.ACM_CERTIFICATE_ARN = sh(script: "devops/jenkins/scripts/Utilities/getCertificate.sh ${params.REGION} ${SITE_SECRETS.JENKINS_SITE_CNAME}", returnStdout: true).trim()
+          env.CERTIFICATE_SUBDOMAIN = env.ACM_CERTIFICATE_ARN != "null" ? sh(script: "devops/jenkins/scripts/Utilities/getCertificateSubdomain.sh ${REGION} ${env.ACM_CERTIFICATE_ARN}", returnStdout: true).trim() : null
+
+          env.HOSTED_ZONE_NAME = sh(script: "devops/jenkins/scripts/Utilities/getHostedZoneName.sh ${SITE_SECRETS.JENKINS_SITE_CNAME} true", returnStdout: true).trim()
+          if (env.HOSTED_ZONE_NAME == "")
+          {
+            println "Hosted Zone Name not exists in Client Route53 for SITE_CNAME '${SITE_SECRETS.JENKINS_SITE_CNAME}'!!!"
+            println "Verify now in core account..."
+
+            sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+
+            env.HOSTED_ZONE_NAME = sh(script: "devops/jenkins/scripts/Utilities/getHostedZoneName.sh ${SITE_SECRETS.JENKINS_SITE_CNAME}", returnStdout: true).trim()
+
+            if (env.HOSTED_ZONE_NAME != "")
+              env.HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT = "yes"
+            else
+              error("Hosted Zone Name not exists in Client and Core Route53 for SITE_CNAME '${SITE_SECRETS.JENKINS_SITE_CNAME}'!!!")
+
+              sh("devops/jenkins/scripts/Aws/enableRemote.sh")  //== Enable aws-cli to access remote account
+          }
+        }
+      }
+    }
+    stage('Delete Cloudformation')
+    {
+      steps
+      {
+        script
+        {
+          env.CLOUDFORMATION_STAGE = true
+          sh("aws cloudformation delete-stack --region ${REGION} --stack-name ${STACK_NAME}")
+          sh("aws cloudformation wait stack-delete-complete --region ${REGION} --stack-name ${STACK_NAME}")
+        }
+      }
+    }
+    stage('Delete EFS Folder')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Utilities/runInOneInstanceOnCluster.sh ${params.REGION} ${params.CLUSTER_NAME} 'rm -rf /efs/${params.SITE_ID}'")
+      }
+    }
+    stage('Delete Scheme')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/MySQL/query.sh ${params.REGION} ${params.CLUSTER_NAME} \"DROP DATABASE ${env.CONTAINER_DB_NAME}\" || :")
+      }
+    }
+    stage('Delete Certificate')
+    {
+      when { expression { env.CERTIFICATE_SUBDOMAIN != "*" && env.CERTIFICATE_SUBDOMAIN != "null" } }
+      steps
+      {
+        sh("devops/jenkins/scripts/Utilities/deleteCertificate.sh ${REGION} ${env.ACM_CERTIFICATE_ARN}")
+      }
+    }
+    stage('Delete Temporary SiteCname')
+    {
+      when { expression { env.HOSTED_ZONE_NAME_IS_ON_CORE_ACCOUNT == "yes" } }
+      steps
+      {
+        script
+        {
+          sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+          sh("devops/jenkins/scripts/Utilities/deleteSubdomain.sh '${SITE_SECRETS.JENKINS_SITE_CNAME}'")
+        }
+      }
+    }
+  }
+  post
+  {
+    always
+    {
+      script
+      {
+        RESULT=(currentBuild.result == null ? "SUCCESSFUL" : currentBuild.result)
+
+        if (env.CLOUDFORMATION_STAGE == true)
+          sh("aws cloudformation describe-stack-events --stack-name ${STACK_NAME} --region ${REGION} | jq '.StackEvents[] | .LogicalResourceId + \" - \" + .ResourceStatus + \" - \" + .ResourceStatusReason'")
+
+        sh("devops/jenkins/scripts/Utilities/sendToSlack.sh '*${RESULT}:* Job _${JOB_NAME} [${BUILD_NUMBER}]_ (${BUILD_URL})'")
+      }
+    }
+  }
+}

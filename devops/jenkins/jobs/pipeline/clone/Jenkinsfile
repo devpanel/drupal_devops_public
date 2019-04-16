@@ -1,0 +1,91 @@
+/*
+devpanel
+Copyright (C) 2018 devpanel
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
+pipeline
+{
+  agent
+  {
+    label 'jenkins-ecs-slave'
+  }
+  options
+  {
+    skipDefaultCheckout true
+  }
+  stages
+  {
+    stage('Checkout SCM')
+    {
+      steps
+      {
+        checkout scm
+      }
+    }
+    stage('Deploy Parameters')
+    {
+      steps
+      {
+        script
+        {
+          PARAMETERS =
+          [
+            string(name: 'REGION', description: 'Region', defaultValue: "us-east-1"),
+            string(name: 'CLUSTER_NAME', description: 'Cluster Name', defaultValue: "pandora"),
+            string(name: 'SOURCE_SCHEMA', description: 'Source Schema', defaultValue: "drupal2019"),
+            string(name: 'DESTINATION_SCHEMA', description: 'Destination Schema', defaultValue: "drupal2020")
+          ]
+
+          if (!params)
+          {
+            properties([parameters(PARAMETERS)])
+            error("Parameters does not exists in this execution. Run again!")
+          }
+          else
+            properties([parameters(PARAMETERS)])
+        }
+      }
+    }
+    stage('Build Image')
+    {
+      steps
+      {
+        dir("devops/docker")
+        {
+          // Build docker image
+          sh("docker build -t drupal -f Dockerfile .")
+        }
+      }
+    }
+    stage('Push image to ECR')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Aws/enableRemote.sh")
+        sh("ecs-cli push -r ${params.REGION} drupal")
+      }
+    }
+    stage('Clone Site in Cluster')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Drupal/Tools/clone.sh ${params.REGION} ${params.CLUSTER_NAME} ${params.SOURCE_SCHEMA} ${params.DESTINATION_SCHEMA}")
+      }
+    }
+  }
+}
